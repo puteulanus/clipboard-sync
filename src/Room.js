@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "react-router";
+import { Button, Message } from 'element-react';
 import { v4 as uuidv4 } from 'uuid';
 
 import encrypt from "./encrypt";
@@ -8,14 +9,15 @@ import { apiUrl, apiProtocol } from "./const";
 function Room() {
 
   const encryption = useRef({});
-  let clipboardHistory = useRef([]);
+  let [clipboardHistory, setClipboardHistory] = useState([]);
 
   let { privateKey, publicKey, shortPwd, encryptedPublicKey } = encryption.current;
-  let { swsSessions, swsStatus } = encryption.current;
+  let { swsSessions } = encryption.current;
 
   const [ roomName, setRoomName ] = useState('');
   const [ pwdInput, setPwdInput ] = useState('');
   const [ refreshTime, setRefreshTime ] = useState(new Date());
+  const [swsStatus, setSwsStatus ] = useState('open');
 
   const [ requirePwd, setRequirePwd ] = useState(false);
 
@@ -42,52 +44,41 @@ function Room() {
     encryption.current.swsSessions = swsSessions;
   };
 
-  const setSwsStatus = (swsStatus) => {
-    encryption.current.swsStatus = swsStatus;
-  };
-
-  const clipboardPolling = () => {
-    const clipboard = navigator.clipboard;
-    setInterval(async () => {
-      try {
-        const clipboardText = await clipboard.readText();
-        if (clipboardText
-          && clipboardHistory.current.length > 0
-          && clipboardText === clipboardHistory.current[clipboardHistory.current.length - 1].data) {
-          return
-        }
-        clipboardHistory.current.push({
-          id: uuidv4(),
-          type: 'text',
-          data: clipboardText
-        });
-        if (encryption.current.swsStatus === 'encrypt') {
-          encryption.current.swsSessions.send({
-            type: 'clipboard_add_text',
-            data: clipboardText
-          })
-        }
-        refresh();
-      } catch (e) {
-        console.log(e);
-      }
-    }, 500);
-  };
-
   const handleSyncMsg = async (msg) => {
     console.log(msg);
     if (msg.type === 'clipboard_add_text') {
-      clipboardHistory.current.push({
+      setClipboardHistory(clipboardHistory => [...clipboardHistory, {
         id: uuidv4(),
         type: 'text',
         data: msg.data
-      });
-      const clipboard = navigator.clipboard;
-      try {
-        await clipboard.writeText(msg.data)
-      } catch (e) {}
-      refresh();
+      }]);
     }
+  };
+
+  const handleSendClipboard = async () => {
+    if (swsStatus !== 'encrypt') return;
+    const clipboard = navigator.clipboard;
+    const cbText = await clipboard.readText();
+    if (!cbText) return;
+    swsSessions.send({
+      type: 'clipboard_add_text',
+      data: cbText
+    });
+    Message({
+      message: '剪贴板发送成功',
+      type: 'success',
+      duration: 1000
+    });
+  };
+
+  const handleCopyHistory = async (id) => {
+    const clipboard = navigator.clipboard;
+    await clipboard.writeText(clipboardHistory.filter(history => history.id === id)[0].data);
+    Message({
+      message: '剪贴板复制成功',
+      type: 'success',
+      duration: 1000
+    });
   };
 
   const swsConnect = id => {
@@ -141,7 +132,6 @@ function Room() {
           }));
           // todo change local state ( for loop )
           encrypt.encryptWs(ws, longPwd, handleSyncMsg);
-          swsStatus = 'encrypt';
           setSwsStatus('encrypt');
         }
         if (msg.type === 'kick_off') {
@@ -173,6 +163,7 @@ function Room() {
     ws.onclose = () => {
       // stop keep alive loop
       clearInterval(keepAliveLoop);
+      setSwsStatus('break');
       // re-generate key pair
       if (privateKey) {
         console.log('Encrypt session break, re-generate key');
@@ -181,7 +172,10 @@ function Room() {
       }
       // retry
       setTimeout(() => {
-        connectionRetry && swsConnect(id);
+        if (connectionRetry) {
+          setSwsStatus('retrying');
+          swsConnect(id);
+        }
       }, 1000);
     };
     setSwsSession(ws);
@@ -203,14 +197,12 @@ function Room() {
     setRequirePwd(false);
     // todo change local state
     encrypt.encryptWs(swsSessions, longPwd, handleSyncMsg);
-    swsStatus = 'encrypt';
     setSwsStatus('encrypt');
   }
 
   useEffect(() => {
 
     swsConnect(roomId);
-    clipboardPolling();
 
   }, []);
 
@@ -221,11 +213,17 @@ function Room() {
     </div>}
     {requirePwd && <div>
       Password: <input type="password" value={pwdInput} onChange={event => setPwdInput(event.target.value)} />
-      <button onClick={clientHandshake}>submit</button>
+      <Button onClick={clientHandshake}>submit</Button>
     </div>}
     <div>
-      {clipboardHistory.current.map(history => <div>
-        {history.data}
+      websocket status: {swsStatus}
+    </div>
+    <div>
+      <Button onClick={handleSendClipboard} disabled={swsStatus !== 'encrypt'}>Send Clipboard</Button>
+    </div>
+    <div>
+      {clipboardHistory.map(history => <div key={history.id}>
+        <Button onClick={() => handleCopyHistory(history.id)}>{history.data.substring(0, 30)}</Button>
       </div>)}
     </div>
     <div style={{ display: 'none' }}>{refreshTime.toLocaleString()}</div>
